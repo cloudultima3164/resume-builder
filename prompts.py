@@ -23,14 +23,9 @@ Rules:
 - These skills will target ATS keywords that were not covered under the rewritten bullets
 - Do NOT mention specific frameworks or regulations unless explicitly contained in the original bullets
 - Return the skills in JSON format under the object name "targeted_skills"
-- Generate a short professional summary aligned to the job requirements and and rewritten bullets
+- Generate a short professional summary aligned to the job requirements and rewritten bullets
 - Return the summary as one entry in JSON format under the object name "professional_summary"
 
-Job Requirements:
-{job_requirements}
-
-Source Bullets:
-{bullets}
-
-Generate tailored resume bullets, skills, and professional summary.
+Generate tailored resume bullets, skills, and professional summary based on the
+provided job requirements and source bullets.
 """
