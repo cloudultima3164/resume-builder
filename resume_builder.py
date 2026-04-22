@@ -257,7 +257,7 @@ if __name__ == "__main__":
         if "API_KEY" in key:
             os.environ[f"CHROMA_{key}"] = value
 
-    with AIClientProvider.get() as ai, BulletStoreProvider.get() as store:
+    with AIClientProvider().get() as ai, BulletStoreProvider().get() as store:
         resume = load_static_data()
         role_index = index_resume_data()
 

@@ -1,7 +1,7 @@
 import json
 import os
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Tuple, TypedDict, Union
+from typing import TYPE_CHECKING, Any, Callable, Tuple, Type, TypedDict, Union
 
 from openai import OpenAI
 
@@ -395,56 +395,71 @@ class PgVectorBulletStore(BulletStore):
         )
 
 
+# ── VTable ────────────────────────────────────────────────────────────────────
+
+class VTable[T]:
+    """Registry that maps string keys to factory callables for an ABC."""
+
+    def __init__(self, base: Type[T]) -> None:
+        self._base = base
+        self._table: dict[str, Callable[[], T]] = {}
+
+    def register(self, key: str, factory: Callable[[], T]) -> None:
+        self._table[key] = factory
+
+    def get(self, key: str) -> T:
+        factory = self._table.get(key)
+        if factory is None:
+            valid = ", ".join(self._table)
+            raise Exception(
+                f"Unknown key '{key}' for {self._base.__name__}. "
+                f"Valid choices: {valid}."
+            )
+        return factory()
+
+    def keys(self) -> tuple[str, ...]:
+        return tuple(self._table)
+
+
 # ── Providers ─────────────────────────────────────────────────────────────────
 
 class AIClientProvider:
     """Reads RESUME_AI_PLATFORM and RESUME_AI_API_KEY and returns the matching AIClient."""
 
-    _PLATFORMS = ("openai", "google", "anthropic")
-
-    @staticmethod
-    def get() -> AIClient:
-        platform = os.getenv("RESUME_AI_PLATFORM")
-
-        if not platform:
-            raise Exception("RESUME_AI_PLATFORM must be defined in the script's .env file")
-
-        if platform == "openai":
+    def __init__(self) -> None:
+        def _make_openai() -> OpenAIChatClient:
             return OpenAIChatClient(OpenAI())
 
-        if platform == "google":
+        def _make_google() -> GoogleAIClient:
             from google import genai
             return GoogleAIClient(genai.Client())
 
-        if platform == "anthropic":
+        def _make_anthropic() -> AnthropicAIClient:
             import anthropic
             return AnthropicAIClient(anthropic.Anthropic())
 
-        raise Exception(
-            f"Unknown RESUME_AI_PLATFORM '{platform}'. "
-            f"Valid choices: {', '.join(AIClientProvider._PLATFORMS)}."
-        )
+        self._vtable: VTable[AIClient] = VTable(AIClient)
+        self._vtable.register("openai", _make_openai)
+        self._vtable.register("google", _make_google)
+        self._vtable.register("anthropic", _make_anthropic)
+
+    def get(self) -> AIClient:
+        platform = os.getenv("RESUME_AI_PLATFORM")
+        if not platform:
+            raise Exception("RESUME_AI_PLATFORM must be defined in the script's .env file")
+        return self._vtable.get(platform)
 
 
 class BulletStoreProvider:
     """Reads RESUME_DB_TYPE and returns the matching BulletStore."""
 
-    _TYPES = ("chroma", "pgvector")
+    def __init__(self) -> None:
+        self._vtable: VTable[BulletStore] = VTable(BulletStore)
+        self._vtable.register("chroma", ChromaBulletStore)
+        self._vtable.register("pgvector", PgVectorBulletStore)
 
-    @staticmethod
-    def get() -> BulletStore:
+    def get(self) -> BulletStore:
         db_type = os.getenv("RESUME_DB_TYPE")
-
         if not db_type:
             raise Exception("RESUME_DB_TYPE must be defined in the script's .env file")
-
-        if db_type == "chroma":
-            return ChromaBulletStore()
-
-        if db_type == "pgvector":
-            return PgVectorBulletStore()
-
-        raise Exception(
-            f"Unknown RESUME_DB_TYPE '{db_type}'. "
-            f"Valid choices: {', '.join(BulletStoreProvider._TYPES)}."
-        )
+        return self._vtable.get(db_type)
