@@ -5,20 +5,17 @@ from typing import List
 
 from dotenv import load_dotenv
 
-from protocols import AIClient, AIClientProvider, BulletStore, BulletStoreProvider
+from protocols import AIClient, AIClientProvider, VectorStore, VectorStoreProvider
 
 
-def load_collection(store: BulletStore, path="data/resume_data.json"):
-    with open(path, encoding='utf8') as f:
+def load_collection(store: VectorStore, path="data/resume_data.json"):
+    with open(path, encoding="utf8") as f:
         data = json.load(f)
 
     candidate = data["candidate"]
     roles = candidate.get("roles", [])
 
-    role_lookup = {
-        (r["company"], r["title"]): r
-        for r in roles
-    }
+    role_lookup = {(r["company"], r["title"]): r for r in roles}
 
     documents = []
     metadatas = []
@@ -42,16 +39,18 @@ def load_collection(store: BulletStore, path="data/resume_data.json"):
             skills = bullet.get("skills", [])
             skills = ", ".join(skills)
 
-            metadatas.append({
-                "candidate_name": candidate["name"],
-                "resume_id": resume_id,
-                "company": company,
-                "title": title,
-                "dates": role.get("dates", ""),
-                "skills": skills,
-                "confidence": bullet.get("confidence", "neutral"),
-                "focus": resume.get("focus", "")
-            })
+            metadatas.append(
+                {
+                    "candidate_name": candidate["name"],
+                    "resume_id": resume_id,
+                    "company": company,
+                    "title": title,
+                    "dates": role.get("dates", ""),
+                    "skills": skills,
+                    "confidence": bullet.get("confidence", "neutral"),
+                    "focus": resume.get("focus", ""),
+                }
+            )
 
             ids.append(bullet["id"])
 
@@ -62,7 +61,7 @@ def load_collection(store: BulletStore, path="data/resume_data.json"):
         traceback.print_exc()
 
 
-def retrieve_relevant_bullets(skills: List[str], store: BulletStore, k=20):
+def retrieve_relevant_bullets(skills: List[str], store: VectorStore, k=20):
     query = " ".join(skills)
     results = store.query(query_texts=[query], n_results=k)
     print("Relevant Bullets retrieved")
@@ -82,10 +81,14 @@ def generate_bullets_and_skills(
         model="gpt-4.1",
     )
     print("New Bullets, Skills, and Summary Generated")
-    return answer['rewritten_bullets'], answer['targeted_skills'], answer['professional_summary']
+    return (
+        answer["rewritten_bullets"],
+        answer["targeted_skills"],
+        answer["professional_summary"],
+    )
 
 
-def match_bullets_to_roles(aligned_bullets, store: BulletStore):
+def match_bullets_to_roles(aligned_bullets, store: VectorStore):
     matched = []
 
     for text in aligned_bullets:
@@ -94,52 +97,58 @@ def match_bullets_to_roles(aligned_bullets, store: BulletStore):
         original_id = result["ids"][0][0]
         metadata = result["metadatas"][0][0]
 
-        matched.append({
-            "rewritten_text": text,
-            "original_bullet_id": original_id,
-            "title": metadata["title"],
-            "company": metadata["company"],
-            "dates": metadata["dates"]
-        })
+        matched.append(
+            {
+                "rewritten_text": text,
+                "original_bullet_id": original_id,
+                "title": metadata["title"],
+                "company": metadata["company"],
+                "dates": metadata["dates"],
+            }
+        )
 
     roles = {}
 
     for entry in matched:
-        title = entry['title']
+        title = entry["title"]
 
         if title not in roles:
             roles[title] = {
-                "company": entry['company'],
+                "company": entry["company"],
                 "title": title,
-                "dates": entry['dates'],
-                "experiences": []
+                "dates": entry["dates"],
+                "experiences": [],
             }
 
-        roles[title]["experiences"].append(entry['rewritten_text'])
+        roles[title]["experiences"].append(entry["rewritten_text"])
 
     return roles
 
 
 def load_static_data(path="data/resume_data.json"):
-    with open(path, encoding='utf8') as f:
+    with open(path, encoding="utf8") as f:
         data = json.load(f)
 
     candidate = {}
-    candidate['name'] = data['candidate']['name']
-    candidate['location'] = data['candidate']['base_location']
-    candidate['education'] = data['candidate']['education']
-    candidate['portfolio'] = data['candidate']['portfolio_links']
-    candidate['certifications'] = data['candidate']['certifications']
+    candidate["name"] = data["candidate"]["name"]
+    candidate["location"] = data["candidate"]["base_location"]
+    candidate["education"] = data["candidate"]["education"]
+    candidate["portfolio"] = data["candidate"]["portfolio_links"]
+    candidate["certifications"] = data["candidate"]["certifications"]
 
     return candidate
 
 
-def load_experiences(ai: AIClient, store: BulletStore):
+def load_experiences(ai: AIClient, store: VectorStore):
     if os.path.exists("data/aligned_experiences.json"):
-        with open("data/aligned_experiences.json", 'r') as f:
+        with open("data/aligned_experiences.json", "r") as f:
             saved_data = json.load(f)
         print("Previous experiences loaded")
-        return saved_data['experience'], saved_data['targeted_skills'], saved_data['professional_summary']
+        return (
+            saved_data["experience"],
+            saved_data["targeted_skills"],
+            saved_data["professional_summary"],
+        )
 
     print("Loading collection")
     load_collection(store)
@@ -157,11 +166,11 @@ def load_experiences(ai: AIClient, store: BulletStore):
     experience = match_bullets_to_roles(aligned_bullets, store)
 
     save_data = {
-        'professional_summary': summary,
-        'experience': experience,
-        'targeted_skills': skills,
+        "professional_summary": summary,
+        "experience": experience,
+        "targeted_skills": skills,
     }
-    with open("data/aligned_experiences.json", 'w') as f:
+    with open("data/aligned_experiences.json", "w") as f:
         json.dump(save_data, f, indent=4)
 
     return experience, skills, summary
@@ -171,7 +180,7 @@ def index_resume_data(path="data/resume_data.json"):
     role_index = {}
     seen = {}
 
-    with open(path, encoding='utf8') as f:
+    with open(path, encoding="utf8") as f:
         data = json.load(f)
 
     print("Indexing Role Data")
@@ -189,10 +198,7 @@ def index_resume_data(path="data/resume_data.json"):
             if text in seen[title]:
                 continue
 
-            role_index[title].append({
-                "text": text,
-                "skills": [s for s in skills]
-            })
+            role_index[title].append({"text": text, "skills": [s for s in skills]})
             seen[title].add(text)
 
     return role_index
@@ -201,13 +207,13 @@ def index_resume_data(path="data/resume_data.json"):
 def pad_roles(
     experience, role_index, min_roles=3, min_bullets=4, path="data/resume_data.json"
 ):
-    with open(path, encoding='utf8') as f:
+    with open(path, encoding="utf8") as f:
         resume_data = json.load(f)
 
     roles_sorted = sorted(
         resume_data["candidate"]["roles"],
         key=lambda r: r.get("start", ""),
-        reverse=True
+        reverse=True,
     )
 
     if len(experience) < min_roles:
@@ -218,7 +224,7 @@ def pad_roles(
                     "company": role.get("company"),
                     "title": title,
                     "dates": role.get("dates"),
-                    "experiences": []
+                    "experiences": [],
                 }
             if len(experience) >= min_roles:
                 break
@@ -257,18 +263,18 @@ if __name__ == "__main__":
         if "API_KEY" in key:
             os.environ[f"CHROMA_{key}"] = value
 
-    with AIClientProvider().get() as ai, BulletStoreProvider().get() as store:
+    with AIClientProvider().get() as ai, VectorStoreProvider().get() as store:
         resume = load_static_data()
         role_index = index_resume_data()
 
         experience, skills, summary = load_experiences(ai, store)
         experience = pad_roles(experience, role_index)
 
-        resume['experiences'] = experience
-        resume['skills'] = skills
-        resume['professional_summary'] = summary
+        resume["experiences"] = experience
+        resume["skills"] = skills
+        resume["professional_summary"] = summary
 
-        with open("data/new_resume.json", 'w') as f:
+        with open("data/new_resume.json", "w") as f:
             json.dump(resume, f, indent=4)
 
         print("New Resume as JSON \n")

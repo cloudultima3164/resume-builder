@@ -1,17 +1,15 @@
 import json
 import os
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Callable, Tuple, Type, TypedDict, Union
+from typing import Any, Callable, Tuple, Type, TypedDict, Union
 
 from openai import OpenAI
+from anthropic import Anthropic
+from google import genai
 
-if TYPE_CHECKING:
-    from google.genai import client as _genai_client
-    import anthropic as _anthropic
-
-# Connection type aliases used by BulletStore.http_client.
-HostPort = Tuple[str, str]          # (host, port) — e.g. ChromaDB
-ConnectionString = str              # Full DSN — e.g. postgresql://user:pw@host/db
+# Connection type aliases used by VectorStore.http_client.
+HostPort = Tuple[str, str]  # (host, port) — e.g. ChromaDB
+ConnectionString = str  # Full DSN — e.g. postgresql://user:pw@host/db
 
 
 class QueryResult(TypedDict):
@@ -22,13 +20,16 @@ class QueryResult(TypedDict):
 
 # ── Abstract base classes ─────────────────────────────────────────────────────
 
+
 class AIClient(ABC):
     """Abstract AI provider — concrete implementations: OpenAI, Google, Anthropic."""
 
     def __init__(self) -> None:
         model_name = os.getenv("RESUME_AI_MODEL_NAME")
         if not model_name:
-            raise Exception("RESUME_AI_MODEL_NAME must be defined in the script's .env file")
+            raise Exception(
+                "RESUME_AI_MODEL_NAME must be defined in the script's .env file"
+            )
         self._model = model_name
 
     def __enter__(self) -> "AIClient":
@@ -42,11 +43,13 @@ class AIClient(ABC):
     @staticmethod
     def get_system_prompt_jd_extraction() -> str:
         from prompts import JD_EXTRACTION_PROMPT
+
         return JD_EXTRACTION_PROMPT
 
     @staticmethod
     def get_system_prompt_resume_generation() -> str:
         from prompts import RESUME_GENERATION_PROMPT
+
         return RESUME_GENERATION_PROMPT
 
     @abstractmethod
@@ -73,7 +76,7 @@ class AIClient(ABC):
         ...
 
 
-class BulletStore(ABC):
+class VectorStore(ABC):
     """Abstract vector store — concrete implementations: ChromaDB, pgvector."""
 
     def __init__(self) -> None:
@@ -104,11 +107,15 @@ class BulletStore(ABC):
                 )
             connect_with = connection_string
 
-        self.embedding_fn = self.embedding_function(values["ai_platform"], values["model_name"])
+        self.embedding_fn = self.embedding_function(
+            values["ai_platform"], values["model_name"]
+        )
         self._client = self.http_client(connect_with)
-        self._collection = self.get_or_create_collection(self._client, values["collection_name"])
+        self._collection = self.get_or_create_collection(
+            self._client, values["collection_name"]
+        )
 
-    def __enter__(self) -> "BulletStore":
+    def __enter__(self) -> "VectorStore":
         return self
 
     @abstractmethod
@@ -120,10 +127,13 @@ class BulletStore(ABC):
     def embedding_function(ai_platform: str, model_name: str) -> Any:
         """Return the ChromaDB embedding function for the given AI platform."""
         from chromadb.utils import embedding_functions
+
         if ai_platform == "openai":
             return embedding_functions.OpenAIEmbeddingFunction(model_name=model_name)
         if ai_platform == "google":
-            return embedding_functions.GoogleGeminiEmbeddingFunction(model_name=model_name)
+            return embedding_functions.GoogleGeminiEmbeddingFunction(
+                model_name=model_name
+            )
         if ai_platform == "anthropic":
             return embedding_functions.VoyageAIEmbeddingFunction(model_name=model_name)
         raise Exception(
@@ -167,12 +177,13 @@ class BulletStore(ABC):
 
 # ── AIClient implementations ──────────────────────────────────────────────────
 
+
 class OpenAIChatClient(AIClient):
     """AIClient backed by the OpenAI SDK."""
 
-    def __init__(self, client: OpenAI) -> None:
+    def __init__(self, *args, **kwargs) -> None:
         super().__init__()
-        self._client = client
+        self._client = OpenAI(*args, **kwargs)
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         self._client.close()
@@ -185,10 +196,15 @@ class OpenAIChatClient(AIClient):
             ]
         )
 
-    def complete_json(self, messages: list[dict[str, str]], model: str | None = None) -> dict:
+    def complete_json(
+        self, messages: list[dict[str, str]], model: str | None = None
+    ) -> dict:
         if not any(m["role"] == "system" for m in messages):
             messages = [
-                {"role": "system", "content": self.get_system_prompt_resume_generation()}
+                {
+                    "role": "system",
+                    "content": self.get_system_prompt_resume_generation(),
+                }
             ] + list(messages)
         response = self._client.chat.completions.create(
             model=model or self._model,
@@ -201,9 +217,9 @@ class OpenAIChatClient(AIClient):
 class GoogleAIClient(AIClient):
     """AIClient backed by the Google Gen AI SDK (google-genai)."""
 
-    def __init__(self, client: "_genai_client.Client") -> None:
+    def __init__(self, *args, **kwargs) -> None:
         super().__init__()
-        self._client = client
+        self._client = genai.Client(*args, **kwargs)
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         self._client.close()
@@ -216,7 +232,9 @@ class GoogleAIClient(AIClient):
             ]
         )
 
-    def complete_json(self, messages: list[dict[str, str]], model: str | None = None) -> dict:
+    def complete_json(
+        self, messages: list[dict[str, str]], model: str | None = None
+    ) -> dict:
         from google.genai import types
 
         system = next((m["content"] for m in messages if m["role"] == "system"), None)
@@ -228,7 +246,8 @@ class GoogleAIClient(AIClient):
                 role="user" if m["role"] == "user" else "model",
                 parts=[types.Part(text=m["content"])],
             )
-            for m in messages if m["role"] != "system"
+            for m in messages
+            if m["role"] != "system"
         ]
         config = types.GenerateContentConfig(
             response_mime_type="application/json",
@@ -245,9 +264,9 @@ class GoogleAIClient(AIClient):
 class AnthropicAIClient(AIClient):
     """AIClient backed by the Anthropic SDK."""
 
-    def __init__(self, client: "_anthropic.Anthropic") -> None:
+    def __init__(self, *args, **kwargs) -> None:
         super().__init__()
-        self._client = client
+        self._client = Anthropic(*args, **kwargs)
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         self._client.close()
@@ -260,7 +279,9 @@ class AnthropicAIClient(AIClient):
             ]
         )
 
-    def complete_json(self, messages: list[dict[str, str]], model: str | None = None) -> dict:
+    def complete_json(
+        self, messages: list[dict[str, str]], model: str | None = None
+    ) -> dict:
         system = next((m["content"] for m in messages if m["role"] == "system"), None)
         if system is None:
             system = self.get_system_prompt_resume_generation()
@@ -275,10 +296,11 @@ class AnthropicAIClient(AIClient):
         return json.loads(response.content[0].text)
 
 
-# ── BulletStore implementations ───────────────────────────────────────────────
+# ── VectorStore implementations ───────────────────────────────────────────────
 
-class ChromaBulletStore(BulletStore):
-    """BulletStore backed by a ChromaDB HTTP collection."""
+
+class ChromaVectorStore(VectorStore):
+    """VectorStore backed by a ChromaDB HTTP collection."""
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         pass  # ChromaDB HTTP client has no explicit close.
@@ -287,10 +309,11 @@ class ChromaBulletStore(BulletStore):
     def http_client(connect_with: Union[HostPort, ConnectionString]) -> Any:
         if not isinstance(connect_with, tuple):
             raise TypeError(
-                f"ChromaBulletStore requires a HostPort tuple, got {type(connect_with).__name__}. "
+                f"ChromaVectorStore requires a HostPort tuple, got {type(connect_with).__name__}. "
                 "Set both RESUME_DB_HOST and RESUME_DB_PORT."
             )
         import chromadb
+
         host, port = connect_with
         return chromadb.HttpClient(host=host, port=int(port))
 
@@ -316,8 +339,8 @@ class _PgVectorCollection:
         self.embedding_fn = embedding_fn
 
 
-class PgVectorBulletStore(BulletStore):
-    """BulletStore backed by PostgreSQL with the pgvector extension.
+class PgVectorStore(VectorStore):
+    """VectorStore backed by PostgreSQL with the pgvector extension.
 
     RESUME_DB_HOST must be a full PostgreSQL DSN:
         postgresql://user:password@localhost:5432/resume_db
@@ -334,12 +357,13 @@ class PgVectorBulletStore(BulletStore):
     def http_client(connect_with: Union[HostPort, ConnectionString]) -> Any:
         if not isinstance(connect_with, str):
             raise TypeError(
-                f"PgVectorBulletStore requires a ConnectionString DSN, "
+                f"PgVectorVectorStore requires a ConnectionString DSN, "
                 f"got {type(connect_with).__name__}. "
                 "Set RESUME_DB_HOST to a full PostgreSQL DSN and unset RESUME_DB_PORT."
             )
         import psycopg2
         from pgvector.psycopg2 import register_vector
+
         conn = psycopg2.connect(connect_with)
         register_vector(conn)
         return conn
@@ -347,7 +371,8 @@ class PgVectorBulletStore(BulletStore):
     def get_or_create_collection(self, client: Any, name: str) -> Any:
         dimension = len(self.embedding_fn(["probe"])[0])
         with client.cursor() as cur:
-            cur.execute(f"""
+            cur.execute(
+                f"""
                 CREATE EXTENSION IF NOT EXISTS vector;
                 CREATE TABLE IF NOT EXISTS {name} (
                     id TEXT PRIMARY KEY,
@@ -355,7 +380,8 @@ class PgVectorBulletStore(BulletStore):
                     metadata JSONB NOT NULL,
                     embedding VECTOR({dimension})
                 )
-            """)
+            """
+            )
         client.commit()
         return _PgVectorCollection(client, name, self.embedding_fn)
 
@@ -397,6 +423,7 @@ class PgVectorBulletStore(BulletStore):
 
 # ── VTable ────────────────────────────────────────────────────────────────────
 
+
 class VTable[T]:
     """Registry that maps string keys to factory callables for an ABC."""
 
@@ -423,42 +450,34 @@ class VTable[T]:
 
 # ── Providers ─────────────────────────────────────────────────────────────────
 
+
 class AIClientProvider:
-    """Reads RESUME_AI_PLATFORM and RESUME_AI_API_KEY and returns the matching AIClient."""
+    """Reads RESUME_AI_PLATFORM and returns the matching AIClient."""
 
     def __init__(self) -> None:
-        def _make_openai() -> OpenAIChatClient:
-            return OpenAIChatClient(OpenAI())
-
-        def _make_google() -> GoogleAIClient:
-            from google import genai
-            return GoogleAIClient(genai.Client())
-
-        def _make_anthropic() -> AnthropicAIClient:
-            import anthropic
-            return AnthropicAIClient(anthropic.Anthropic())
-
         self._vtable: VTable[AIClient] = VTable(AIClient)
-        self._vtable.register("openai", _make_openai)
-        self._vtable.register("google", _make_google)
-        self._vtable.register("anthropic", _make_anthropic)
+        self._vtable.register("openai", OpenAIChatClient)
+        self._vtable.register("google", GoogleAIClient)
+        self._vtable.register("anthropic", AnthropicAIClient)
 
     def get(self) -> AIClient:
         platform = os.getenv("RESUME_AI_PLATFORM")
         if not platform:
-            raise Exception("RESUME_AI_PLATFORM must be defined in the script's .env file")
+            raise Exception(
+                "RESUME_AI_PLATFORM must be defined in the script's .env file"
+            )
         return self._vtable.get(platform)
 
 
-class BulletStoreProvider:
-    """Reads RESUME_DB_TYPE and returns the matching BulletStore."""
+class VectorStoreProvider:
+    """Reads RESUME_DB_TYPE and returns the matching VectorStore."""
 
     def __init__(self) -> None:
-        self._vtable: VTable[BulletStore] = VTable(BulletStore)
-        self._vtable.register("chroma", ChromaBulletStore)
-        self._vtable.register("pgvector", PgVectorBulletStore)
+        self._vtable: VTable[VectorStore] = VTable(VectorStore)
+        self._vtable.register("chroma", ChromaVectorStore)
+        self._vtable.register("pgvector", PgVectorStore)
 
-    def get(self) -> BulletStore:
+    def get(self) -> VectorStore:
         db_type = os.getenv("RESUME_DB_TYPE")
         if not db_type:
             raise Exception("RESUME_DB_TYPE must be defined in the script's .env file")
