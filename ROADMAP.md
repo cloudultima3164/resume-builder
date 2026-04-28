@@ -15,15 +15,15 @@ This roadmap extends the current single-file, OpenAI-only resume builder into a 
 Define a `BaseAIClient` abstract base class (ABC) that standardizes the operations the rest of the tool requires from any AI provider. All provider-specific logic lives only in the concrete implementations; the calling code never imports a provider SDK directly.
 
 **Interface surface:**
-- `chat_completion(messages, response_format, model, **kwargs) → str`
-- `embed(texts: list[str], model) → list[list[float]]`
+- `complete_json(messages, model) → dict`
+- `embed(texts: list[str]) → list[list[float]]`
 
 **Implementations:**
 - `OpenAIClient` — wraps the existing `openai` SDK (current behavior)
 - `AnthropicClient` — wraps `anthropic` SDK; maps the interface to the Messages API
 - `GeminiClient` — wraps `google-genai` SDK; maps to `GenerativeModel.generate_content`
 
-**Config:** The active provider and model names are selected via environment variables (e.g., `AI_PROVIDER=anthropic`, `AI_EMBED_MODEL=...`). A factory function reads the config and returns the correct concrete instance.
+**Config:** The active provider and model names are selected via environment variables (e.g., `RESUME_AI_PLATFORM=anthropic`, `RESUME_AI_MODEL_NAME=...`). A factory function reads the config and returns the correct concrete instance.
 
 ---
 
@@ -35,13 +35,12 @@ Define a `BaseVectorStore` ABC covering the operations used for embedding storag
 - `get_or_create_collection(name) → Collection`
 - `add(ids, documents, metadatas)`
 - `query(query_texts, n_results) → QueryResult`
-- `delete(ids)`
 
 **Implementations:**
-- `ChromaDBStore` — wraps the existing `chromadb.HttpClient` (current behavior)
+- `ChromaVectorStore` — wraps the existing `chromadb.HttpClient` (current behavior)
 - `PgVectorStore` — wraps `psycopg2` / `pgvector` extension; implements the same surface using SQL under the hood
 
-**Config:** `DB_PROVIDER=chroma|pgvector` plus connection parameters read from `.env`.
+**Config:** `RESUME_DB_TYPE=chroma|pgvector` plus connection parameters read from `.env`.
 
 ---
 

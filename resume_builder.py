@@ -5,10 +5,10 @@ from typing import List
 
 from dotenv import load_dotenv
 
-from protocols import AIClient, AIClientProvider, VectorStore, VectorStoreProvider
+from protocols import BaseAIClient, AIClientProvider, BaseVectorStore, VectorStoreProvider
 
 
-def load_collection(store: VectorStore, path="data/resume_data.json"):
+def load_collection(store: BaseVectorStore, path="data/resume_data.json"):
     with open(path, encoding="utf8") as f:
         data = json.load(f)
 
@@ -61,7 +61,7 @@ def load_collection(store: VectorStore, path="data/resume_data.json"):
         traceback.print_exc()
 
 
-def retrieve_relevant_bullets(skills: List[str], store: VectorStore, k=20):
+def retrieve_relevant_bullets(skills: List[str], store: BaseVectorStore, k=20):
     query = " ".join(skills)
     results = store.query(query_texts=[query], n_results=k)
     print("Relevant Bullets retrieved")
@@ -69,7 +69,7 @@ def retrieve_relevant_bullets(skills: List[str], store: VectorStore, k=20):
 
 
 def generate_bullets_and_skills(
-    job_requirements: dict, bullets: List[str], ai: AIClient
+    job_requirements: dict, bullets: List[str], ai: BaseAIClient
 ):
     user_content = (
         f"Job Requirements:\n{json.dumps(job_requirements, indent=2)}\n\n"
@@ -88,7 +88,7 @@ def generate_bullets_and_skills(
     )
 
 
-def match_bullets_to_roles(aligned_bullets, store: VectorStore):
+def match_bullets_to_roles(aligned_bullets, store: BaseVectorStore):
     matched = []
 
     for text in aligned_bullets:
@@ -139,7 +139,7 @@ def load_static_data(path="data/resume_data.json"):
     return candidate
 
 
-def load_experiences(ai: AIClient, store: VectorStore):
+def load_experiences(ai: BaseAIClient, store: BaseVectorStore):
     if os.path.exists("data/aligned_experiences.json"):
         with open("data/aligned_experiences.json", "r") as f:
             saved_data = json.load(f)
@@ -263,7 +263,7 @@ if __name__ == "__main__":
         if "API_KEY" in key:
             os.environ[f"CHROMA_{key}"] = value
 
-    with AIClientProvider().get() as ai, VectorStoreProvider().get() as store:
+    with AIClientProvider().get() as ai, VectorStoreProvider().get(ai) as store:
         resume = load_static_data()
         role_index = index_resume_data()
 
