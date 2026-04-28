@@ -7,7 +7,7 @@ from openai import OpenAI
 from anthropic import Anthropic
 from google import genai
 
-# Connection type aliases used by VectorStore.http_client.
+# Connection type aliases used by BaseVectorStore.http_client.
 HostPort = Tuple[str, str]  # (host, port) — e.g. ChromaDB
 ConnectionString = str  # Full DSN — e.g. postgresql://user:pw@host/db
 
@@ -21,8 +21,8 @@ class QueryResult(TypedDict):
 # ── Abstract base classes ─────────────────────────────────────────────────────
 
 
-class AIClient(ABC):
-    """Abstract AI provider — concrete implementations: OpenAI, Google, Anthropic."""
+class BaseAIClient(ABC):
+    """Abstract AI provider — concrete implementations: OpenAIClient, GeminiClient, AnthropicClient."""
 
     def __init__(self) -> None:
         model_name = os.getenv("RESUME_AI_MODEL_NAME")
@@ -32,7 +32,7 @@ class AIClient(ABC):
             )
         self._model = model_name
 
-    def __enter__(self) -> "AIClient":
+    def __enter__(self) -> "BaseAIClient":
         return self
 
     @abstractmethod
@@ -75,22 +75,21 @@ class AIClient(ABC):
         """
         ...
 
+    @abstractmethod
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        """Return embeddings for the given texts."""
+        ...
 
-class VectorStore(ABC):
-    """Abstract vector store — concrete implementations: ChromaDB, pgvector."""
 
-    def __init__(self) -> None:
-        required = {
-            "ai_platform": "RESUME_AI_PLATFORM",
-            "model_name": "RESUME_AI_MODEL_NAME",
-            "collection_name": "RESUME_COLLECTION_NAME",
-        }
-        values: dict[str, str] = {}
-        for var, env_key in required.items():
-            val = os.getenv(env_key)
-            if not val:
-                raise Exception(f"{env_key} must be defined in the script's .env file")
-            values[var] = val
+class BaseVectorStore(ABC):
+    """Abstract vector store — concrete implementations: ChromaVectorStore, PgVectorStore."""
+
+    def __init__(self, ai_client: BaseAIClient) -> None:
+        collection_name = os.getenv("RESUME_COLLECTION_NAME")
+        if not collection_name:
+            raise Exception(
+                "RESUME_COLLECTION_NAME must be defined in the script's .env file"
+            )
 
         db_host = os.getenv("RESUME_DB_HOST")
         if db_host:
@@ -107,15 +106,11 @@ class VectorStore(ABC):
                 )
             connect_with = connection_string
 
-        self.embedding_fn = self.embedding_function(
-            values["ai_platform"], values["model_name"]
-        )
+        self.embedding_fn = ai_client.embed
         self._client = self.http_client(connect_with)
-        self._collection = self.get_or_create_collection(
-            self._client, values["collection_name"]
-        )
+        self._collection = self.get_or_create_collection(collection_name)
 
-    def __enter__(self) -> "VectorStore":
+    def __enter__(self) -> "BaseVectorStore":
         return self
 
     @abstractmethod
@@ -124,34 +119,16 @@ class VectorStore(ABC):
         ...
 
     @staticmethod
-    def embedding_function(ai_platform: str, model_name: str) -> Any:
-        """Return the ChromaDB embedding function for the given AI platform."""
-        from chromadb.utils import embedding_functions
-
-        if ai_platform == "openai":
-            return embedding_functions.OpenAIEmbeddingFunction(model_name=model_name)
-        if ai_platform == "google":
-            return embedding_functions.GoogleGeminiEmbeddingFunction(
-                model_name=model_name
-            )
-        if ai_platform == "anthropic":
-            return embedding_functions.VoyageAIEmbeddingFunction(model_name=model_name)
-        raise Exception(
-            f"Unknown ai_platform '{ai_platform}'. "
-            "Valid choices: openai, google, anthropic."
-        )
-
-    @staticmethod
     @abstractmethod
     def http_client(connect_with: Union[HostPort, ConnectionString]) -> Any:
         """Return a client connected to the vector database."""
         ...
 
     @abstractmethod
-    def get_or_create_collection(self, client: Any, name: str) -> Any:
+    def get_or_create_collection(self, name: str) -> Any:
         """Return the named collection, creating it if it does not exist.
 
-        Implementations should assign self.embedding_fn to the collection.
+        Implementations should use self.embedding_fn for embeddings.
         """
         ...
 
@@ -175,15 +152,20 @@ class VectorStore(ABC):
         ...
 
 
-# ── AIClient implementations ──────────────────────────────────────────────────
+# ── BaseAIClient implementations ──────────────────────────────────────────────
 
 
-class OpenAIChatClient(AIClient):
-    """AIClient backed by the OpenAI SDK."""
+class OpenAIClient(BaseAIClient):
+    """BaseAIClient backed by the OpenAI SDK."""
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__()
         self._client = OpenAI(*args, **kwargs)
+        from chromadb.utils import embedding_functions
+
+        self._embedding_fn = embedding_functions.OpenAIEmbeddingFunction(
+            model_name=self._model
+        )
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         self._client.close()
@@ -213,13 +195,21 @@ class OpenAIChatClient(AIClient):
         )
         return json.loads(response.choices[0].message.content)
 
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return self._embedding_fn(texts)
 
-class GoogleAIClient(AIClient):
-    """AIClient backed by the Google Gen AI SDK (google-genai)."""
+
+class GeminiClient(BaseAIClient):
+    """BaseAIClient backed by the Google Gen AI SDK (google-genai)."""
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__()
         self._client = genai.Client(*args, **kwargs)
+        from chromadb.utils import embedding_functions
+
+        self._embedding_fn = embedding_functions.GoogleGeminiEmbeddingFunction(
+            model_name=self._model
+        )
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         self._client.close()
@@ -260,13 +250,21 @@ class GoogleAIClient(AIClient):
         )
         return json.loads(response.text)
 
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return self._embedding_fn(texts)
 
-class AnthropicAIClient(AIClient):
-    """AIClient backed by the Anthropic SDK."""
+
+class AnthropicClient(BaseAIClient):
+    """BaseAIClient backed by the Anthropic SDK."""
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__()
         self._client = Anthropic(*args, **kwargs)
+        from chromadb.utils import embedding_functions
+
+        self._embedding_fn = embedding_functions.VoyageAIEmbeddingFunction(
+            model_name=self._model
+        )
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         self._client.close()
@@ -295,12 +293,15 @@ class AnthropicAIClient(AIClient):
         )
         return json.loads(response.content[0].text)
 
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return self._embedding_fn(texts)
 
-# ── VectorStore implementations ───────────────────────────────────────────────
+
+# ── BaseVectorStore implementations ───────────────────────────────────────────
 
 
-class ChromaVectorStore(VectorStore):
-    """VectorStore backed by a ChromaDB HTTP collection."""
+class ChromaVectorStore(BaseVectorStore):
+    """BaseVectorStore backed by a ChromaDB HTTP collection."""
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         pass  # ChromaDB HTTP client has no explicit close.
@@ -317,8 +318,8 @@ class ChromaVectorStore(VectorStore):
         host, port = connect_with
         return chromadb.HttpClient(host=host, port=int(port))
 
-    def get_or_create_collection(self, client: Any, name: str) -> Any:
-        return client.get_or_create_collection(
+    def get_or_create_collection(self, name: str) -> Any:
+        return self._client.get_or_create_collection(
             name=name,
             embedding_function=self.embedding_fn,
         )
@@ -339,15 +340,13 @@ class _PgVectorCollection:
         self.embedding_fn = embedding_fn
 
 
-class PgVectorStore(VectorStore):
-    """VectorStore backed by PostgreSQL with the pgvector extension.
+class PgVectorStore(BaseVectorStore):
+    """BaseVectorStore backed by PostgreSQL with the pgvector extension.
 
     RESUME_DB_HOST must be a full PostgreSQL DSN:
         postgresql://user:password@localhost:5432/resume_db
     RESUME_DB_PORT must be unset (omit it) so __init__ passes the DSN as a
     ConnectionString rather than a HostPort tuple.
-    Embeddings are generated via the ChromaDB OpenAI embedding function using
-    RESUME_AI_MODEL_NAME regardless of RESUME_AI_PLATFORM.
     """
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
@@ -357,7 +356,7 @@ class PgVectorStore(VectorStore):
     def http_client(connect_with: Union[HostPort, ConnectionString]) -> Any:
         if not isinstance(connect_with, str):
             raise TypeError(
-                f"PgVectorVectorStore requires a ConnectionString DSN, "
+                f"PgVectorStore requires a ConnectionString DSN, "
                 f"got {type(connect_with).__name__}. "
                 "Set RESUME_DB_HOST to a full PostgreSQL DSN and unset RESUME_DB_PORT."
             )
@@ -368,9 +367,9 @@ class PgVectorStore(VectorStore):
         register_vector(conn)
         return conn
 
-    def get_or_create_collection(self, client: Any, name: str) -> Any:
+    def get_or_create_collection(self, name: str) -> Any:
         dimension = len(self.embedding_fn(["probe"])[0])
-        with client.cursor() as cur:
+        with self._client.cursor() as cur:
             cur.execute(
                 f"""
                 CREATE EXTENSION IF NOT EXISTS vector;
@@ -382,8 +381,8 @@ class PgVectorStore(VectorStore):
                 )
             """
             )
-        client.commit()
-        return _PgVectorCollection(client, name, self.embedding_fn)
+        self._client.commit()
+        return _PgVectorCollection(self._client, name, self.embedding_fn)
 
     def add(self, ids: list[str], documents: list[str], metadatas: list[dict]) -> None:
         embeddings = self._collection.embedding_fn(documents)
@@ -452,15 +451,15 @@ class VTable[T]:
 
 
 class AIClientProvider:
-    """Reads RESUME_AI_PLATFORM and returns the matching AIClient."""
+    """Reads RESUME_AI_PLATFORM and returns the matching BaseAIClient."""
 
     def __init__(self) -> None:
-        self._vtable: VTable[AIClient] = VTable(AIClient)
-        self._vtable.register("openai", OpenAIChatClient)
-        self._vtable.register("google", GoogleAIClient)
-        self._vtable.register("anthropic", AnthropicAIClient)
+        self._vtable: VTable[BaseAIClient] = VTable(BaseAIClient)
+        self._vtable.register("openai", OpenAIClient)
+        self._vtable.register("google", GeminiClient)
+        self._vtable.register("anthropic", AnthropicClient)
 
-    def get(self) -> AIClient:
+    def get(self) -> BaseAIClient:
         platform = os.getenv("RESUME_AI_PLATFORM")
         if not platform:
             raise Exception(
@@ -470,15 +469,22 @@ class AIClientProvider:
 
 
 class VectorStoreProvider:
-    """Reads RESUME_DB_TYPE and returns the matching VectorStore."""
+    """Reads RESUME_DB_TYPE and returns the matching BaseVectorStore."""
 
     def __init__(self) -> None:
-        self._vtable: VTable[VectorStore] = VTable(VectorStore)
-        self._vtable.register("chroma", ChromaVectorStore)
-        self._vtable.register("pgvector", PgVectorStore)
+        self._registry: dict[str, Type[BaseVectorStore]] = {
+            "chroma": ChromaVectorStore,
+            "pgvector": PgVectorStore,
+        }
 
-    def get(self) -> VectorStore:
+    def get(self, ai_client: BaseAIClient) -> BaseVectorStore:
         db_type = os.getenv("RESUME_DB_TYPE")
         if not db_type:
             raise Exception("RESUME_DB_TYPE must be defined in the script's .env file")
-        return self._vtable.get(db_type)
+        cls = self._registry.get(db_type)
+        if cls is None:
+            valid = ", ".join(self._registry)
+            raise Exception(
+                f"Unknown RESUME_DB_TYPE '{db_type}'. Valid choices: {valid}."
+            )
+        return cls(ai_client)
